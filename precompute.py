@@ -1,15 +1,14 @@
 """Run once locally to generate models/ artifacts used by app.py."""
 import json
 import os
-import pickle
 import re
 import string
 
 import numpy as np
 import pandas as pd
 from gensim.models import Word2Vec
-from scipy.sparse import save_npz
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import linear_kernel
 from sklearn.preprocessing import normalize
 
 os.makedirs("models", exist_ok=True)
@@ -43,17 +42,12 @@ tfidf_vectorizer = TfidfVectorizer(
     sublinear_tf=True,
 )
 tfidf_matrix = tfidf_vectorizer.fit_transform(df["clean_text"])
-with open("models/tfidf_vectorizer.pkl", "wb") as f:
-    pickle.dump(tfidf_vectorizer, f, protocol=5)
-save_npz("models/tfidf_matrix.npz", tfidf_matrix)
 print(f"  Shape {tfidf_matrix.shape}  |  {tfidf_matrix.nnz:,} non-zeros")
 
 print("Building category index...")
 category_index: dict[str, list[int]] = {}
 for row_idx, cat in enumerate(df["categoryName"]):
     category_index.setdefault(cat, []).append(row_idx)
-with open("models/category_index.json", "w") as f:
-    json.dump(category_index, f)
 print(f"  {len(category_index)} categories")
 
 print("Training Word2Vec...")
@@ -67,7 +61,6 @@ w2v_model = Word2Vec(
     epochs=5,
     seed=42,
 )
-w2v_model.wv.save("models/w2v_vectors.kv")
 print(f"  Vocab: {len(w2v_model.wv):,}")
 
 print("Computing document vectors...")
@@ -82,8 +75,59 @@ def get_doc_vector(tokens: list[str]) -> np.ndarray:
 
 doc_vectors = np.vstack([get_doc_vector(t) for t in tokenized])
 doc_vectors_norm = normalize(doc_vectors).astype(np.float32)
-np.save("models/doc_vectors_norm.npy", doc_vectors_norm)
-print(f"  Shape {doc_vectors_norm.shape}  |  dtype {doc_vectors_norm.dtype}")
+print(f"  Shape {doc_vectors_norm.shape}")
+
+print("Pre-computing TF-IDF recommendations (batch by category)...")
+tfidf_rows: list[tuple] = []
+for indices in category_index.values():
+    cat_mat = tfidf_matrix[indices]
+    sim = linear_kernel(cat_mat, cat_mat)
+    for local_i, global_i in enumerate(indices):
+        row = sim[local_i]
+        rank = 0
+        for pos in np.argsort(row)[::-1]:
+            if indices[pos] == global_i:
+                continue
+            tfidf_rows.append((global_i, indices[pos], round(float(row[pos]), 4)))
+            rank += 1
+            if rank == 10:
+                break
+print(f"  {len(tfidf_rows):,} TF-IDF recommendation rows")
+
+print("Pre-computing Word2Vec recommendations (batch by category)...")
+w2v_rows: list[tuple] = []
+for indices in category_index.values():
+    idx_arr = np.array(indices)
+    vecs = doc_vectors_norm[idx_arr]
+    sim = vecs @ vecs.T
+    for local_i, global_i in enumerate(indices):
+        row = sim[local_i]
+        rank = 0
+        for pos in np.argsort(row)[::-1]:
+            if int(idx_arr[pos]) == global_i:
+                continue
+            w2v_rows.append((global_i, int(idx_arr[pos]), round(float(row[pos]), 4)))
+            rank += 1
+            if rank == 10:
+                break
+print(f"  {len(w2v_rows):,} Word2Vec recommendation rows")
+
+tfidf_df = pd.DataFrame(tfidf_rows, columns=["product_idx", "rec_idx", "score"])
+tfidf_df["method"] = "tfidf"
+w2v_df = pd.DataFrame(w2v_rows, columns=["product_idx", "rec_idx", "score"])
+w2v_df["method"] = "w2v"
+recs = pd.concat([tfidf_df, w2v_df], ignore_index=True)
+recs.to_csv("models/recs.csv.gz", index=False, compression="gzip")
+print(f"  Saved models/recs.csv.gz  ({len(recs):,} rows)")
+
+meta = {
+    "w2v_vocab_size": len(w2v_model.wv),
+    "n_products": len(df),
+    "n_categories": df["categoryName"].nunique(),
+}
+with open("models/meta.json", "w") as f:
+    json.dump(meta, f)
+print("  Saved models/meta.json")
 
 print("\nAll artifacts saved to models/")
 for fname in sorted(os.listdir("models")):

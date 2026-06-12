@@ -5,8 +5,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from scipy.sparse import load_npz
-from sklearn.metrics.pairwise import linear_kernel
 
 st.set_page_config(page_title="Ecommerce Recommendation System", layout="wide")
 
@@ -14,77 +12,43 @@ st.set_page_config(page_title="Ecommerce Recommendation System", layout="wide")
 @st.cache_resource(show_spinner="Loading recommendation models…")
 def load_everything() -> tuple:
     df = pd.read_csv("models/products.csv")
-
-    tfidf_matrix = load_npz("models/tfidf_matrix.npz")
-
-    with open("models/category_index.json") as f:
-        category_index: dict[str, list[int]] = json.load(f)
-
-    doc_vectors_norm = np.load("models/doc_vectors_norm.npy")
-
+    recs = pd.read_csv("models/recs.csv.gz", compression="gzip")
     with open("models/meta.json") as f:
         meta = json.load(f)
+    return df, recs, meta
 
-    return df, tfidf_matrix, category_index, doc_vectors_norm, meta
+
+def _rows_to_df(rows: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
+    results = []
+    for _, row in rows.iterrows():
+        rec = df.iloc[int(row["rec_idx"])]
+        results.append({
+            "title": rec["title"],
+            "category": rec["categoryName"],
+            "similarity_score": float(row["score"]),
+        })
+    return pd.DataFrame(results)
 
 
 def get_tfidf_recommendations(
-    product_idx: int,
-    df: pd.DataFrame,
-    tfidf_matrix,
-    category_index: dict,
-    top_k: int = 10,
+    product_idx: int, df: pd.DataFrame, recs: pd.DataFrame, top_k: int = 10
 ) -> pd.DataFrame:
-    category = df.at[product_idx, "categoryName"]
-    cat_indices = category_index[category]
-    scores = linear_kernel(tfidf_matrix[product_idx], tfidf_matrix[cat_indices]).flatten()
-    sorted_positions = np.argsort(scores)[::-1]
-    results = []
-    for pos in sorted_positions:
-        idx = cat_indices[pos]
-        if idx == product_idx:
-            continue
-        results.append({
-            "title": df.at[idx, "title"],
-            "category": category,
-            "similarity_score": round(float(scores[pos]), 4),
-        })
-        if len(results) >= top_k:
-            break
-    return pd.DataFrame(results)
+    rows = recs[(recs["product_idx"] == product_idx) & (recs["method"] == "tfidf")].head(top_k)
+    return _rows_to_df(rows, df)
 
 
 def get_w2v_recommendations(
-    product_idx: int,
-    df: pd.DataFrame,
-    doc_vectors_norm: np.ndarray,
-    category_index: dict,
-    top_k: int = 10,
+    product_idx: int, df: pd.DataFrame, recs: pd.DataFrame, top_k: int = 10
 ) -> pd.DataFrame:
-    category = df.at[product_idx, "categoryName"]
-    cat_indices = np.array(category_index[category])
-    scores = doc_vectors_norm[cat_indices] @ doc_vectors_norm[product_idx]
-    sorted_positions = np.argsort(scores)[::-1]
-    results = []
-    for pos in sorted_positions:
-        idx = int(cat_indices[pos])
-        if idx == product_idx:
-            continue
-        results.append({
-            "title": df.at[idx, "title"],
-            "category": category,
-            "similarity_score": round(float(scores[pos]), 4),
-        })
-        if len(results) >= top_k:
-            break
-    return pd.DataFrame(results)
+    rows = recs[(recs["product_idx"] == product_idx) & (recs["method"] == "w2v")].head(top_k)
+    return _rows_to_df(rows, df)
 
 
-def _render_recs(recs: pd.DataFrame, latency_ms: float) -> None:
-    if recs.empty:
+def _render_recs(recs_df: pd.DataFrame, latency_ms: float) -> None:
+    if recs_df.empty:
         st.info("Not enough products in this category to generate recommendations.")
         return
-    for _, row in recs.iterrows():
+    for _, row in recs_df.iterrows():
         title = row["title"]
         score = float(row["similarity_score"])
         label = title[:88] + "…" if len(title) > 88 else title
@@ -94,7 +58,7 @@ def _render_recs(recs: pd.DataFrame, latency_ms: float) -> None:
     st.info(f"Latency: {latency_ms:.1f} ms")
 
 
-df, tfidf_matrix, category_index, doc_vectors_norm, meta = load_everything()
+df, recs, meta = load_everything()
 
 st.title("Ecommerce Product Recommendation System")
 st.caption("Amazon Products 2023 · Content-based filtering · TF-IDF + Word2Vec · Category-aware cosine similarity")
@@ -125,7 +89,8 @@ with tab1:
             category = df.at[product_idx, "categoryName"]
 
             st.markdown(f"**{match_titles[selected_pos]}**")
-            st.caption(f"Category: {category}  ·  {len(category_index[category])} products in this category")
+            cat_size = (recs["product_idx"] == product_idx).sum() // 2
+            st.caption(f"Category: {category}  ·  ~{cat_size} products in this category")
 
             st.divider()
 
@@ -134,14 +99,14 @@ with tab1:
             with col_tfidf:
                 st.subheader("TF-IDF Top 10")
                 t0 = time.perf_counter()
-                tfidf_recs = get_tfidf_recommendations(product_idx, df, tfidf_matrix, category_index)
+                tfidf_recs = get_tfidf_recommendations(product_idx, df, recs)
                 tfidf_ms = (time.perf_counter() - t0) * 1000
                 _render_recs(tfidf_recs, tfidf_ms)
 
             with col_w2v:
                 st.subheader("Word2Vec Top 10")
                 t0 = time.perf_counter()
-                w2v_recs = get_w2v_recommendations(product_idx, df, doc_vectors_norm, category_index)
+                w2v_recs = get_w2v_recommendations(product_idx, df, recs)
                 w2v_ms = (time.perf_counter() - t0) * 1000
                 _render_recs(w2v_recs, w2v_ms)
 
@@ -150,7 +115,7 @@ with tab2:
     c1.metric("Products (full dataset)", "1,426,337")
     c2.metric("Categories", "248")
     c3.metric("Word2Vec vocab (demo)", f"{meta['w2v_vocab_size']:,}")
-    c4.metric("Demo sample", f"{len(df):,}")
+    c4.metric("Demo sample", f"{meta['n_products']:,}")
 
     st.caption(
         "Full dataset: 1.4M+ Amazon products (2023). "
