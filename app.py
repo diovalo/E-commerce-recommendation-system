@@ -1,71 +1,32 @@
+import json
 import time
-import re
-import string
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from gensim.models import Word2Vec
-from sklearn.feature_extraction.text import TfidfVectorizer
+from gensim.models import KeyedVectors
+from scipy.sparse import load_npz
 from sklearn.metrics.pairwise import linear_kernel
-from sklearn.preprocessing import normalize
 
 st.set_page_config(page_title="Ecommerce Recommendation System", layout="wide")
 
-_PUNCT_DIGITS = re.compile(f"[{re.escape(string.punctuation)}0-9]")
-_SPACES = re.compile(r"\s+")
 
-
-def clean_text(text: str) -> str:
-    if not isinstance(text, str):
-        return ""
-    text = text.lower()
-    text = _PUNCT_DIGITS.sub(" ", text)
-    return _SPACES.sub(" ", text).strip()
-
-
-@st.cache_resource(show_spinner="Loading data and training models — this takes about a minute on first run…")
+@st.cache_resource(show_spinner="Loading recommendation models…")
 def load_everything() -> tuple:
-    df = pd.read_csv("data/sample_products.csv")
-    df["clean_text"] = df["title"].apply(clean_text)
-    df = df[df["clean_text"].str.len() >= 3].reset_index(drop=True)
+    df = pd.read_csv("models/products.csv")
 
-    tfidf_vectorizer = TfidfVectorizer(
-        max_features=50000,
-        ngram_range=(1, 2),
-        min_df=2,
-        sublinear_tf=True,
-    )
-    tfidf_matrix = tfidf_vectorizer.fit_transform(df["clean_text"])
+    tfidf_matrix = load_npz("models/tfidf_matrix.npz")
 
-    category_index: dict[str, list[int]] = {}
-    for row_idx, cat in enumerate(df["categoryName"]):
-        category_index.setdefault(cat, []).append(row_idx)
+    with open("models/category_index.json") as f:
+        category_index: dict[str, list[int]] = json.load(f)
 
-    tokenized = [text.split() for text in df["clean_text"]]
+    wv = KeyedVectors.load("models/w2v_vectors.kv")
+    w2v_vocab_size = len(wv)
 
-    w2v_model = Word2Vec(
-        sentences=tokenized,
-        vector_size=100,
-        window=5,
-        min_count=2,
-        workers=4,
-        epochs=5,
-        seed=42,
-    )
-    w2v_vocab_size = len(w2v_model.wv)
+    doc_vectors_norm = np.load("models/doc_vectors_norm.npy")
 
-    def _doc_vector(tokens: list[str]) -> np.ndarray:
-        vecs = [w2v_model.wv[t] for t in tokens if t in w2v_model.wv]
-        if not vecs:
-            return np.zeros(w2v_model.vector_size)
-        return np.mean(vecs, axis=0)
-
-    doc_vectors = np.vstack([_doc_vector(tokens) for tokens in tokenized])
-    doc_vectors_norm = normalize(doc_vectors)
-
-    return df, tfidf_matrix, category_index, doc_vectors_norm, w2v_vocab_size
+    return df, tfidf_matrix, category_index, doc_vectors_norm, w2v_vocab_size, wv
 
 
 def get_tfidf_recommendations(
@@ -134,7 +95,7 @@ def _render_recs(recs: pd.DataFrame, latency_ms: float) -> None:
     st.info(f"Latency: {latency_ms:.1f} ms")
 
 
-df, tfidf_matrix, category_index, doc_vectors_norm, w2v_vocab_size = load_everything()
+df, tfidf_matrix, category_index, doc_vectors_norm, w2v_vocab_size, wv = load_everything()
 
 st.title("Ecommerce Product Recommendation System")
 st.caption("Amazon Products 2023 · Content-based filtering · TF-IDF + Word2Vec · Category-aware cosine similarity")
@@ -194,7 +155,7 @@ with tab2:
 
     st.caption(
         "Full dataset: 1.4M+ Amazon products (2023). "
-        "Demo runs on a stratified sample — up to 500 products per category."
+        "Demo runs on a stratified sample — up to 200 products per category."
     )
 
     st.divider()

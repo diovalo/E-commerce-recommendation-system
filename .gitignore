@@ -1,6 +1,6 @@
-data/*.csv
-!data/sample_products.csv
+data/amazon_products.csv
+data/amazon_categories.csv
 data/*.json
-*.pkl
 __pycache__/
 .ipynb_checkpoints/
+_smoke_test.py
