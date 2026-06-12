@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from gensim.models import KeyedVectors
 from scipy.sparse import load_npz
 from sklearn.metrics.pairwise import linear_kernel
 
@@ -21,12 +20,12 @@ def load_everything() -> tuple:
     with open("models/category_index.json") as f:
         category_index: dict[str, list[int]] = json.load(f)
 
-    wv = KeyedVectors.load("models/w2v_vectors.kv")
-    w2v_vocab_size = len(wv)
-
     doc_vectors_norm = np.load("models/doc_vectors_norm.npy")
 
-    return df, tfidf_matrix, category_index, doc_vectors_norm, w2v_vocab_size, wv
+    with open("models/meta.json") as f:
+        meta = json.load(f)
+
+    return df, tfidf_matrix, category_index, doc_vectors_norm, meta
 
 
 def get_tfidf_recommendations(
@@ -95,7 +94,7 @@ def _render_recs(recs: pd.DataFrame, latency_ms: float) -> None:
     st.info(f"Latency: {latency_ms:.1f} ms")
 
 
-df, tfidf_matrix, category_index, doc_vectors_norm, w2v_vocab_size, wv = load_everything()
+df, tfidf_matrix, category_index, doc_vectors_norm, meta = load_everything()
 
 st.title("Ecommerce Product Recommendation System")
 st.caption("Amazon Products 2023 · Content-based filtering · TF-IDF + Word2Vec · Category-aware cosine similarity")
@@ -150,7 +149,7 @@ with tab2:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Products (full dataset)", "1,426,337")
     c2.metric("Categories", "248")
-    c3.metric("Word2Vec vocab (full dataset)", "117,653")
+    c3.metric("Word2Vec vocab (demo)", f"{meta['w2v_vocab_size']:,}")
     c4.metric("Demo sample", f"{len(df):,}")
 
     st.caption(
