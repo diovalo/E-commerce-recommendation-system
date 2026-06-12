@@ -1,6 +1,6 @@
 # E-Commerce Product Recommendation System
 
-Content-based product recommendations over **1.4M real Amazon listings** using TF-IDF and Word2Vec — both methods stay under 10 ms per query by restricting similarity search to the product's own category.
+Content-based product recommendations over **1.4M real Amazon listings** using TF-IDF and Word2Vec : both methods stay under 10 ms per query by restricting similarity search to the product's own category.
 
 **[Live Dashboard →](https://e-commerce-recommendation-system-8zjl6qf4zau7hofwckwjaf.streamlit.app/)**
 
