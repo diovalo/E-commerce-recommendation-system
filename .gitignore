@@ -1,4 +1,5 @@
 data/*.csv
+!data/sample_products.csv
 data/*.json
 *.pkl
 __pycache__/
